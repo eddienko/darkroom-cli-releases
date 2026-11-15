@@ -20,6 +20,9 @@ as the address in use (and so still obeys the rule above). Any other redirect is
 before the request, its body or the `Authorization` header is sent again: the command
 fails with an error that names where DarkRoom tried to send it (the host, never a token).
 
+An agent skill for these commands is `SKILL.md` in the releases repository (also each
+release's `darkroom-SKILL.md`; `skills/darkroom/SKILL.md` in the source).
+
 ## darkroom login / logout
 
 - `darkroom login [--server URL]`: device sign-in. Prints a code and
@@ -29,6 +32,14 @@ fails with an error that names where DarkRoom tried to send it (the host, never 
   (exit 1). While waiting it keeps going through a lost connection, `429` and
   `502`/`503`/`504` (see "Waiting and transient errors"), until the code expires
   (10 minutes by default); it stops at once on any other refusal.
+- `darkroom login --agent`: the same, for an AI agent: the human runs it. The approval
+  page shows that an agent is asking, and the jobs this sign-in submits are labelled
+  `agent` in DarkRoom (a label only: the same rights as any sign-in). It still needs the
+  human to approve in the browser; nothing in `darkroom` can approve it. A computer
+  keeps one sign-in (`~/.darkroom/v2`, or `$DARKROOM_CONFIG_DIR`), so signing in as the
+  other kind than the stored one (`--agent` over a plain sign-in, or the reverse) is
+  refused unless you add `--force` (it then replaces and ends the old one) or log out
+  first; use a separate `DARKROOM_CONFIG_DIR` to keep both.
 - `darkroom logout`: ends this computer's sign-in on the server and removes it locally.
 
 ## darkroom job submit [flags] (-- COMMAND [ARGUMENT...] | --shell LINE)
@@ -67,6 +78,11 @@ with an invalid line, is a usage error (exit 2).
 
 If the answer to a submission is lost, `darkroom` says so, never retries by itself, and
 prints the idempotency key to retry with safely.
+
+Exit status: 0 created, 1 refused, 2 usage, 3 outcome unknown (the answer was lost; the
+message "couldn't confirm the submission" prints the key to retry with). With `--wait`, once
+the job exists, as for `wait` (0 succeeded, 3 failed, 4 cancelled, 124 timed out, 1 other
+errors), so then 3 means the job failed.
 
 ## darkroom job get | list | cancel | wait | result
 

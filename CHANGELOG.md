@@ -3,6 +3,20 @@
 All notable changes to this project will be documented in this file.
 
 
+## v2.0.0-rc.3
+
+`darkroom login --agent`: the human signs in for an AI agent. The approval page says an agent is
+asking, and the jobs that sign-in submits are labelled `agent` (not `cli`) in DarkRoom. It has
+exactly the rights of any other sign-in and is approved only by the human, in the browser. A
+computer keeps one sign-in, so signing in as the other kind (`--agent` over a plain `login`, or the
+reverse) now asks for `--force`. Plain `login` sends nothing new. Needs a DarkRoom that knows the
+`agent` kind.
+
+An agent skill: `SKILL.md`, a short guide for AI agents that use `darkroom` (sign-in, the
+safe job workflow, the exit statuses, what never to do, when to ask the human). It is
+published at the root of the releases repository and attached to each release as
+`darkroom-SKILL.md`, listed in `checksums.txt`. No change to any command.
+
 ## v2.0.0-rc.2
 
 The same program as 2.0.0-rc.1: no change to any command. This release adds the user documentation to

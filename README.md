@@ -88,3 +88,11 @@ darkroom session desktop SESSION                         # then point a VNC view
 ```
 
 Everything else is in [USAGE.md](USAGE.md).
+
+## For AI agents
+
+[SKILL.md](SKILL.md) is a short skill file for an AI agent that runs `darkroom` for you: what
+each command is for, the safe patterns, what never to do and when to ask you. Each release
+also has it as the file `darkroom-SKILL.md` (listed in `checksums.txt`). Copy it to the place
+your agent reads skills or instructions from, or point your agent at its address. We have not
+checked which agent products read it.
