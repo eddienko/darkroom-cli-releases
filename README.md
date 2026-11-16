@@ -89,6 +89,14 @@ darkroom session desktop SESSION                         # then point a VNC view
 
 Everything else is in [USAGE.md](USAGE.md).
 
+## Updates
+
+`darkroom` tells you, at most once a day and only in a terminal, when DarkRoom announces a
+newer version (download it from this repository and verify it against `checksums.txt`); it
+stops with a message if your version is older than your DarkRoom supports, and never updates
+itself. Set `DARKROOM_NO_UPDATE_CHECK=1` to turn the notice off. Details are in
+[USAGE.md](USAGE.md).
+
 ## For AI agents
 
 [SKILL.md](SKILL.md) is a short skill file for an AI agent that runs `darkroom` for you: what

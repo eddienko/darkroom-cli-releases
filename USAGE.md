@@ -23,6 +23,37 @@ fails with an error that names where DarkRoom tried to send it (the host, never 
 An agent skill for these commands is `SKILL.md` in the releases repository (also each
 release's `darkroom-SKILL.md`; `skills/darkroom/SKILL.md` in the source).
 
+## Updates: the notice and the minimum version
+
+DarkRoom tells `darkroom` (in `GET /config`: `api.min_client_version` and
+`api.latest_client_version`) the oldest version the deployment supports and the newest the
+operator announces. `darkroom` never updates itself, downloads or runs anything.
+
+- **Below the minimum:** every command that talks to DarkRoom (all but `version`, `help`,
+  `--help`, `logout` and `completion`; `login` is refused too) stops before sending anything
+  else, with exit status 1 and a message naming this version, the minimum, the releases
+  address and the advice to verify the download against `checksums.txt`. For support,
+  `DARKROOM_SKIP_VERSION_CHECK=1` lets it run (it says so on stderr).
+- **Behind the newest:** one plain notice on stderr, `A newer darkroom (X) is available; you
+  have Y. It can be downloaded from <address> (verify it against checksums.txt).`, at most once every 24 hours, only when stderr is a terminal
+  and the command is not using `--json`. `DARKROOM_NO_UPDATE_CHECK=1` turns the notice off only: the
+  minimum is still enforced and the once-a-day refresh for it still happens.
+- A cache older than seven days is not used to refuse a command (a fresh fetch is still tried);
+  the notice may still use older data.
+- A build with the default development version `2.0.0-dev` counts as a prerelease below
+  `2.0.0`, so it is refused when the deployment's minimum is `2.0.0` or higher unless
+  `DARKROOM_SKIP_VERSION_CHECK=1` is set (developers). The bypass line is not printed with
+  `--json`.
+- The releases address is built into `darkroom` (`https://github.com/eddienko/darkroom-cli-releases/releases`);
+  nothing a server sends changes it, and a version from the server is shown only if it is a
+  plain `MAJOR.MINOR.PATCH[-PRERELEASE]`.
+- What was learned is kept in `update-check.json` in the configuration directory
+  (`~/.darkroom/v2`, or `$DARKROOM_CONFIG_DIR`; readable only by you). When it is older than
+  24 hours or for another server, a command makes one `GET /config` to your DarkRoom with a
+  3 second limit before it runs; if that fails nothing is said, the command goes on (with what was last known, if
+  anything) and no new attempt is made for 10 minutes. A development build whose version is not
+  `MAJOR.MINOR.PATCH[-PRERELEASE]` checks nothing.
+
 ## darkroom login / logout
 
 - `darkroom login [--server URL]`: device sign-in. Prints a code and

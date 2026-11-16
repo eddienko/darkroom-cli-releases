@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 
 
+## v2.0.0-rc.4
+
+Update check. `darkroom` reads the oldest supported version and the newest announced version from
+DarkRoom (`GET /config`; needs a DarkRoom that sends them, an older one changes nothing). Below the
+oldest, commands that use DarkRoom stop with exit status 1 and say where to download a newer one
+(`version`, `help`, `logout` and `completion` still work; `DARKROOM_SKIP_VERSION_CHECK=1` bypasses
+it). Behind the newest, one plain notice on stderr at most once a day, only in a terminal and never
+with `--json`; `DARKROOM_NO_UPDATE_CHECK=1` turns only the notice off (the minimum still applies). The download address is built in. What it
+learns is kept in `update-check.json` in the configuration directory. `darkroom` never updates
+itself.
+
 ## v2.0.0-rc.3
 
 `darkroom login --agent`: the human signs in for an AI agent. The approval page says an agent is

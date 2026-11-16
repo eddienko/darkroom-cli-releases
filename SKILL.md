@@ -16,6 +16,9 @@ look for a hidden flag or call the DarkRoom API directly.
 ## Check the tool first
 
 - `darkroom version` shows the installed version.
+- If a command prints "A newer darkroom ... is available" or refuses because this version is
+  older than the oldest this DarkRoom supports, tell the human and do nothing else: do not
+  download, install or run anything to update.
 - `darkroom --help`, `darkroom job --help` and `darkroom job submit --help` are the
   source of truth for commands and flags. If this file and the help disagree, trust the
   help. Never use a flag or command that the help does not list.
