@@ -263,6 +263,211 @@ vncviewer localhost:5901                  # in another terminal
 Only the TurboVNC viewer has been tried (with `websocat` as the bridge; this command's
 own use with it has not been tried against a real Session yet).
 
+## darkroom session list [flags]
+
+Lists your Sessions, so that a Session id (`ses_...`) can be found from the command line for
+`session desktop` and `session cp`. Table columns: `ID`, `LABEL` (truncated to 40 characters),
+`APP`, `STATE` (with the progress, `phase: message`, while the Session is `starting`), one
+Session per line. The address a Session is opened at is not in the table.
+
+| Flag | |
+|---|---|
+| `--state STATE[,STATE...]` | Only Sessions in these states: `starting`, `running`, `stopping`, `stopped`, `failed`. Default: `starting,running,stopping` (the Sessions that are not finished). An unknown state exits 2 before any request. |
+| `--json` | One JSON array on stdout and nothing else: for each Session `id`, `label`, `app` (`{id, name}` or `null`), `state`, `progress` (`{phase, message}` or `null`) and, while it is running, `open_url`. The full label is only here. |
+
+At most 500 Sessions are fetched (following `next_cursor`); if there are more, `(and more)` is
+printed on stderr. With none, the table is empty, `you have no Sessions` goes to stderr, and
+`--json` writes `[]`. Exit status: 0 (also when there are none); 1 a failure (not signed in,
+DarkRoom unavailable); 2 a wrong command line.
+
+## darkroom session cp [flags] SOURCE... DEST
+
+Copies files and directories between this computer and a running Session's file browser (the
+one JupyterLab shows, whose root is your home in the Session), like `cp` and `scp`. It talks
+to the Session's own JupyterLab interface at the address DarkRoom gives for the Session (the
+host of its `open_url`, https only), signed with your notebook token: no DarkRoom API and no
+other host is involved. **It is for small amounts of data.** For large data use the S3 keys
+for `incoming` and `processed`, or `rclone`.
+
+Exactly one side is remote, written `SESSION:PATH`. `SESSION` is a Session id (`ses_...`); empty
+(`:PATH`) it is the one running Session you have, chosen as `session desktop` chooses it (with
+none or several, they are listed and the exit status is 1). With `--url`, the Session id is taken
+from the pasted address as in `session desktop`. A path whose part before the first colon is not
+empty or `ses_...` (for example `C:\Users\me\f.txt`, `./a:b`) is local; write `./` before a local
+name that would otherwise read as `SESSION:`.
+
+```bash
+darkroom session cp results.csv ses_1a2b3c:data/results.csv      # upload one file
+darkroom session cp -r ./analysis :                              # a directory into your home (the only running Session)
+darkroom session cp ses_1a2b3c:data/out.png ./                   # download into the current directory
+darkroom session cp -r ses_1a2b3c:data ./backup                  # download a directory
+```
+
+**Paths.** `PATH` is relative to the file browser root (your home). An absolute path, any `..`
+segment, a name that starts with a dot (the Session refuses hidden names), a backslash, a
+control character (NUL included) or a path over 4096 bytes is refused with exit status 2 before
+anything is sent. An empty path is the root: a directory as a destination, and not allowed as a
+source. **Destination rules, as `cp`:** if `DEST` is an existing directory, or ends with `/`, each
+source keeps its own name inside it; otherwise (one source) `DEST` is the new name; several sources
+need a directory. Missing parent directories are created, on the Session and on this computer. A
+directory source needs `-r` (exit status 2 otherwise).
+
+**No silent overwrite.** An existing destination file is refused (exit status 1, nothing copied)
+unless `--force`. For a directory the whole plan is checked before anything is sent or written, so a
+refusal leaves nothing half-copied; a directory where a file belongs (or the reverse) is always refused.
+
+**Upload.** A file that fits in one piece is sent in one request; a larger file goes in pieces
+(`--chunk-size`, default 8 MiB, from 1 MiB to 32 MiB; the file is read as a stream, so memory is
+bounded by one piece). The Session appends each piece, so a piece is never sent twice blindly: if a
+piece's request fails in a way that leaves it unknown whether the Session got it (a lost connection,
+a timeout, a 5xx), the file's size in the Session is read: unchanged, the piece is sent again (up to
+three times); already including the piece, it is carried on; anything else, the upload stops. A failed
+upload deletes its partial file in the Session; if that fails the message names the path. With
+`--force` over an existing file sent in pieces, the old remote file is replaced: it is deleted first (the
+Session would append otherwise), so **if the upload then fails, neither the old nor the new file
+remains** (this is what `cp -f` does too). The cleanup of a failed upload deletes the partial file only if
+its size is one this upload could have written; otherwise it leaves it and says so. If the local file
+grows or shrinks while it is uploaded, a warning is printed on stderr and listed in `--json` as
+`warnings`. Uploading a directory (`-r`) creates the directories and skips, and reports, hidden
+entries (the Session refuses them), symbolic links (not followed) and other special files; the exit
+status is still 0 for those skips unless `--strict`.
+
+**Download.** A file is written to `DEST.part` (created exclusively; a symbolic link there is never
+followed) and renamed when complete, so a half file is never under the final name. An existing
+`DEST.part` is refused unless `--resume` (continue it) or `--force` (start over) is given. An
+interrupted download keeps `DEST.part`; `--resume` continues it with a range request, checking that
+the file's length in the Session (the total in the answer) is still what it was when the command
+started, and that the final size matches: if the file changed length, it stops with a message (a
+Session that ignores the range sends the whole file again, which replaces the part).
+A directory (`-r`) is received as one zip archive and extracted: an entry that is absolute, contains
+`..`, a backslash, a drive letter, a control character, is not valid UTF-8 or has a name over 255 bytes
+stops the whole extraction before anything is written; symbolic links and devices are not created
+(skipped, and reported); files get mode 0644 and directories 0755; more than 1 000 000 entries is
+refused, and so is an archive that would expand (declared sizes added up) to more than
+`--max-extract-size` (default 8 GiB) or, where the platform can say (Linux, macOS), to more than the
+free disk space; the archive's own download is cut off at that size too, and the bytes written are
+held to it. Names that differ only in case (on Windows and macOS), and on Windows reserved names
+(`CON`, `PRN`, `AUX`, `NUL`, `CONIN$`, `CONOUT$`, `COM0`-`COM9`, `LPT0`-`LPT9` and the superscript forms, with or without an extension) and names ending
+in a dot or a space (also `COM0`, `LPT0`, the superscript forms `COM¹`-`COM³`/`LPT¹`-`LPT³`, `CONIN$` and `CONOUT$`), stop the extraction before anything is written. The temporary archive is removed on every path. A failed extraction removes the files it wrote and the empty directories it created; with `--force`, files it had already replaced are not restored, and directories that already existed are left as they are. A name that turns out to be the same file as one already written from the same archive (for example Unicode-normalised names on macOS) stops the extraction. The archive is expected to contain the
+directory itself as its first level (as JupyterLab's own "download as archive" does); if it does not,
+its entries are extracted under `DEST` as they are.
+
+| Flag | |
+|---|---|
+| `-r`, `--recursive` | Copy directories. |
+| `--force` | Replace files that already exist at the destination. |
+| `--strict` | Exit 1 if anything was skipped (hidden entries, symbolic links, special files). |
+| `--resume` | Continue an interrupted download (`DEST.part`). |
+| `--max-extract-size SIZE` | Refuse a directory download that would expand to more than this (default 8GiB; `KiB`, `MiB`, `GiB`). |
+| `--chunk-size SIZE` | Piece size for larger uploads: bytes, or with `K`, `KiB`, `M`, `MiB`; 1 MiB to 32 MiB. |
+| `--token-file PATH`, `--url URL` | As for `session desktop`. |
+| `-q`, `--quiet` | No progress and no summary on stderr (errors are still printed). |
+| `--json` | One JSON object on stdout and nothing else (below). |
+| `-v`, `--verbose` | On stderr, before transferring: the DarkRoom server, the Session id and state and the Session's address (host and path); then one line per kind of request as it first happens (`GET contents`, `PUT contents`, `DELETE contents`, `GET files`, `GET directories`); and a failure names its step (for example `upload chunk 2 of 3`). Never the notebook token, the archive token or file contents. |
+
+The notebook token is read exactly as for `session desktop` (`--token-file PATH`, else
+`$DARKROOM_NOTEBOOK_TOKEN`; a file readable by group or others is refused on Linux and macOS; no
+prompt; without either, exit status 2). It is sent only in the `Authorization: token` header to the
+Session's own https address, never in a URL, argument, message or log, never to DarkRoom, and
+never to a redirect target (a redirect is an error). The connection is direct (proxy settings are
+not used) and certificates are always verified. A directory download sends a random `archiveToken`
+that the Session's archive service requires; it is not the notebook token.
+
+**Progress** (bytes, rate, elapsed, per file and total) goes to stderr only when stderr is a
+terminal and `--quiet` is not given; at the end a summary of what was copied, skipped and failed is
+printed on stderr. **`--json`** writes one object to stdout and nothing else:
+`{"direction": "upload"|"download", "session", "destination", "copied": [{"source", "destination",
+"bytes"}], "skipped": [{"path", "reason"}], "failed": [{"path", "error"}], "warnings": ["..."], "bytes", "seconds"}`; it is
+written when a transfer was reached, also when some items failed (exit status 1), and not when the
+command line, the token or the Session was refused before that.
+
+**Limits.** Only what the file browser root contains is reachable; hidden files are skipped (the
+Session refuses them); modes, owners and times are not preserved; symbolic links are not followed;
+transfers are one file at a time, and an interrupted upload cannot be resumed (it is deleted and
+started again); speed is whatever the connection gives (about 1.8 MB/s was measured on one link).
+
+Exit status: 0 everything requested was copied (skips of hidden entries and symbolic links are still
+0 without `--strict`); 1 a failure (the Session is not running, 401/403 the token is wrong, expired
+or not for this Session, a path the Session refused, a refused overwrite, a TLS error or a lost
+connection, or any item that failed); 2 a wrong command line, path or token source. Ctrl-C stops the
+transfer, deletes a partial upload and exits 1.
+
+## darkroom session ls [flags] [SESSION][:PATH]
+
+Lists a folder, or describes one file, in a running Session's file browser (the one JupyterLab shows;
+its root is your home), so that you can see what is there before `session cp`. The remote side is
+written as for `session cp`: `ses_1a2b3c:data`, `ses_1a2b3c:` or just `ses_1a2b3c` for the root, `:data`
+for the one running Session (chosen as `session desktop` chooses it), none at all for the root of that
+Session; `--url`, `--token-file` and the token rules are those of `session cp`. A path that is absolute,
+has a `..` segment, a hidden (dot) name, a backslash or a control character is refused with exit status 2
+before anything is sent.
+
+The command first asks what the path is (`GET /api/contents/<path>?content=0`, which never carries a
+file's data); only for a directory does it then read the list (`content=1`). A file's data is never
+fetched.
+
+| Flag | |
+|---|---|
+| `-l`, `--long` | A table `TYPE SIZE MODIFIED NAME` (type `dir`, `file` or `nb` for a notebook; size in bytes, `-` for a directory; time in your local zone). |
+| `--human` | With `-l`, sizes in KiB, MiB, GiB. |
+| `--json` | One array of `{name, path, type, size, last_modified}` on stdout and nothing else: the exact strings the Session gave, every entry (`type` is `directory`, `file` or `notebook`; `size` is `null` for a directory). |
+| `-v`, `--verbose`, `--token-file PATH`, `--url URL` | As for `session cp`. |
+
+The default output is one name per line, sorted by name without regard to case, `/` after a directory.
+**Hidden entries (names starting with a dot) are not listed:** the Session does not return them. In the
+text output control characters in a name (and line, paragraph and bidirectional controls) are shown as
+`?`, so that a name cannot move the cursor or send terminal escapes; `--json` keeps the exact name, so
+treat it as data. An empty folder prints nothing (exit 0). Exit status: 0; 1 a failure (the Session is not
+running, 401/403 the token is refused, no such file or directory, a TLS error or a lost connection); 2 a
+wrong command line, path or token source.
+
+## darkroom session rm [flags] SESSION:PATH...
+
+Deletes files and **empty** folders in a running Session's file browser (its root is your home).
+**Deletion is permanent** as far as `darkroom` can promise: it does not know whether the Session keeps a
+trash and does not check. Look first with `darkroom session ls`, or use `--dry-run`.
+
+**Recursive delete is not available** (`-r` is accepted only to be refused, with exit status 2 and no request
+sent). A folder can contain a link to another folder, and the Session's file interface may not say which entries are
+links (it may list a link as an ordinary folder), so `darkroom` cannot be sure: descending could delete files
+outside the folder you named. Delete the files first (see them with `darkroom session ls`), then the empty folder. A folder
+target is listed once (no descent): if it is empty it is deleted, otherwise that target is refused with its
+entry count (`folder is not empty (N entries): delete its contents first`), counted as failed, and the other
+targets go on. A folder that holds only hidden files may look empty (the Session may not list them), and the Session may then
+refuse to delete it; that is reported as a failure.
+
+Each target is `SESSION:PATH` (or `:PATH` for the one running Session); several targets are allowed, on one
+Session. **There is no wildcard expansion:** the path is literal. A path with `*`, `?` or `[` is allowed (a
+file may really be named so) but a warning says nothing is expanded; a `*` is normally expanded by your shell
+against *local* files before `darkroom` runs. These are refused with exit status 2 before anything is sent: no
+target, the file browser root (an empty path, `.`, `ses_1a2b3c:`), any `..`, an absolute path, a backslash, a
+hidden (dot) name, a control character, a path that is not remote (`C:\x` is a local path), the same path
+named twice. One refused target refuses the whole command.
+
+| Flag | |
+|---|---|
+| `-r`, `--recursive` | Refused (exit 2): see above. |
+| `--dry-run` | Print the plan and delete nothing (no `DELETE` is sent); it never asks. With `--json` the plan is an array of `{path, type, error}` (`type`: `file`, `empty_folder`, `refused_folder`, `missing`). |
+| `--yes` | Skip the confirmation question only. The plan is still printed and every refusal still applies. |
+| `--json` | One JSON object on stdout and nothing else: `{deleted, already_gone, failed: [{path, reason}], dry_run}`. |
+| `-v`, `--verbose`, `--token-file PATH`, `--url URL` | As for `session cp`. |
+
+**The plan** is printed on stderr: each target as a file, an empty folder, or refused with the reason (a missing
+target says `no such file or directory`, counts as failed and the others still go on). **Confirmation:** unless
+`--yes`, `Delete these? [y/N]` is asked on the terminal; anything but `y` or `yes`, the end of the input, and
+Ctrl-C delete nothing and exit 1. Without a terminal and without `--yes` (and without `--dry-run`) the command
+refuses with exit status 2, before sending anything.
+
+**Deleting.** One `DELETE` per target, in order; one is never repeated. After a lost connection or a 5xx the
+entry is looked at once: if it is gone the answer was lost, so it counts as deleted, otherwise it is reported as
+failed. A refused token (401, 403), a TLS error or a lost connection ends the whole command. If the Session
+answers 404 to the `DELETE` the entry was already gone: it is reported as **already gone**, in the text and in
+`already_gone` of `--json`, and is never counted as deleted. If the Session refuses to delete a folder at its turn (it may not be empty now: something was
+added) it is not forced. Names are shown with control characters as `?`.
+
+Exit status: 0 every target was deleted or was already gone (or `--dry-run` with nothing wrong); 1 anything
+failed or you answered no; 2 a wrong command line, `-r`, a refused target, or a non-interactive run without `--yes`.
+
 ## Waiting and transient errors
 
 `job wait`, `job submit --wait`, `job rerun --wait`, `job logs --follow` and the polling of

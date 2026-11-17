@@ -3,6 +3,46 @@
 All notable changes to this project will be documented in this file.
 
 
+## v2.0.0-rc.5
+
+`darkroom session cp`: copy files and directories between this computer and a running Session's
+file browser (its home), like `cp` and `scp`: `darkroom session cp results.csv ses_1a2b3c:data/`,
+`darkroom session cp -r ses_1a2b3c:data ./backup`. For small amounts of data (large data: the S3
+keys, or `rclone`). Safe by default: an existing destination file is refused unless `--force` (the
+whole plan is checked first); remote paths stay inside the home (absolute, `..` and hidden names
+are refused before anything is sent); larger uploads go in pieces with a check that stops a
+repeated piece from duplicating data, and a failed upload deletes its partial file; downloads are
+written to `DEST.part` and renamed when complete (`--resume` continues one); a directory download
+is extracted safely (nothing outside the destination, no symbolic links or devices). Uploading a
+directory skips hidden entries and symbolic links and says so (`--strict` makes that a failure).
+`--json` writes one summary to stdout; `--verbose` says which Session and address are used and
+which step failed (never the token); progress is shown on stderr only in a terminal (`--quiet`
+turns it off). It uses the notebook token exactly as `session desktop` does, and sends it only to
+the Session's own address.
+
+`darkroom session rm [--dry-run] [--yes] SESSION:PATH...`: deletes files and EMPTY folders in a running
+Session's file browser. **Deletion is permanent** as far as `darkroom` can promise. There is no recursive
+delete (`-r` is refused): a folder can contain a link to another folder and the Session's file interface may
+not say which entries are links, so delete the files first, then the empty folder; a folder that is not empty
+is refused with its entry count. The paths are literal (no wildcard expansion; a warning if one looks like a
+pattern); the file browser root, `..`, absolute and hidden paths and a target named twice are refused before
+anything is sent; a plan is printed first, `--dry-run` deletes nothing, and without a terminal the command
+refuses unless `--yes` is given (an interrupt or the end of input at the question deletes nothing). An entry
+the Session says is already gone is reported as such, not as deleted.
+
+`darkroom session ls [-l] [--human] [--json] [SESSION][:PATH]`: lists a folder, or describes one file, in a
+running Session's file browser, to see what is there before `session cp`. Names are sorted without regard to
+case with `/` marking directories; `-l` is a table (type, size, time, name); `--json` writes every entry exactly
+as the Session gives it. Control characters in names are shown as `?` in the text output. It reads a file's
+description only, never its content. Same Session choice, notebook token and path rules as `session cp`.
+
+`darkroom session list`: your Sessions (ID, label, App, state), by default those that are not
+finished (`--state` chooses others, `--json` is for scripts and agents), to find a Session id for
+`session desktop` and `session cp`.
+
+The update notice and the minimum version apply to the new commands as to every other (no notice
+with `--json`). The agent skill covers both commands.
+
 ## v2.0.0-rc.4
 
 Update check. `darkroom` reads the oldest supported version and the newest announced version from

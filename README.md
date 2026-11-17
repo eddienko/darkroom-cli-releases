@@ -1,8 +1,8 @@
 # darkroom
 
 `darkroom` is the command-line client of DarkRoom. It signs you in to a DarkRoom
-deployment, submits and follows jobs, and lets a native VNC viewer use the desktop of a
-running Session. It is one program with no installer and nothing else to install.
+deployment, submits and follows jobs, lists your Sessions, copies small files to and from a
+running Session, and lets a native VNC viewer use its desktop. It is one program with no installer and nothing else to install.
 `darkroom` 2.x speaks DarkRoom API v2.
 
 This repository only carries the programs (see [Releases](../../releases)) and these
@@ -84,7 +84,11 @@ darkroom job submit --output home --dry-run -- echo ok   # check and resolve, se
 darkroom job submit --output home -- echo ok             # submit
 darkroom job get NUMBER                                  # state, failure, times
 export DARKROOM_NOTEBOOK_TOKEN=...                       # or: --token-file PATH (made in the web app)
+darkroom session list                                    # your Sessions: find a Session id
+darkroom session rm --dry-run SESSION:old.csv                  # what a deletion would remove (permanent without --dry-run)
+darkroom session ls SESSION:data                              # what is in a folder of a running Session
 darkroom session desktop SESSION                         # then point a VNC viewer at the printed port
+darkroom session cp results.csv SESSION:data/results.csv # copy a small file into a running Session
 ```
 
 Everything else is in [USAGE.md](USAGE.md).
