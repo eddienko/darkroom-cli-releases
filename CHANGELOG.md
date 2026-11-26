@@ -3,6 +3,94 @@
 All notable changes to this project will be documented in this file.
 
 
+## v2.0.0-rc.7
+
+This release also contains the changes listed for v2.0.0-rc.6, which was tagged but never published.
+
+`darkroom mcp` stage 2: tools that act, under the rules DarkRoom now enforces for an assistant's sign-in (the CLI
+adds none of its own). Eleven new tools: `list_sizes`, `list_environments`, `list_apps` (read-only),
+`preview_workflow_run` and `preview_job` (`POST /jobs/preview` for a Workflow run or a custom Job; nothing is created
+or counted; read-only), `run_workflow`, `submit_job`
+(a custom Job; needs the `agent_actions` permission staff grant), `rerun_job`, `cancel_job`, `start_session` (needs
+`agent_actions`) and `stop_session` (only Sessions an assistant started). The tools that act declare `readOnlyHint`
+false, and `cancel_job` and `stop_session` `destructiveHint` true. Each tool that creates a Job or Session sends one
+`Idempotency-Key` per call (a UUID, or the new `idempotency_key` argument), reuses it for its own retries and returns
+it; an unknown outcome says to call again with it, and stays unknown when a later retry fails otherwise. A write
+refused because another `darkroom` command renewed the shared sign-in at that moment says to call again once (it is
+not resent by itself). A tool that acts never retries a `429` by itself:
+`agent.rate_limited` is returned at once with `retry_after_seconds` (DarkRoom's own value, up to an hour; the read
+tools no longer retry it either). DarkRoom's refusals are worded for the assistant (`agent.workflow_not_allowed`,
+`agent.capability_missing`, `agent.rate_limited`, `auth.agent_forbidden`, validation errors with their pointers,
+`limit.*`, entitlements), with the facts as structured content. `get_capabilities` returns `agent_policy` (allowed
+actions, the hourly limit, used, remaining); `find_workflows` and `get_workflow` return `agent_runnable`;
+`list_sessions` returns `requested_via`. `darkroom mcp --read-only` serves only the eleven read tools of the first
+version (a call to any other is refused as an unknown tool): the way to keep an assistant that can only look. The
+help, README (registration: `claude mcp add --scope user ... -- /full/path/darkroom mcp`; `/mcp` reconnects) and
+the agent skill say what DarkRoom allows an assistant and what staff control, and that what tools return, including
+the logs and output names of custom Jobs, goes to the assistant's AI provider.
+
+`darkroom job submit`, `job rerun` and `job cancel` with an agent sign-in word DarkRoom's agent refusals in plain
+language (`agent.workflow_not_allowed`, `agent.capability_missing`, `agent.rate_limited` with when to try again,
+`auth.agent_forbidden`); `darkroom login --help` describes the rules of an agent sign-in.
+
+
+`darkroom mcp`: read-only DarkRoom tools for an AI assistant on your own computer (Claude Code, Gemini CLI, OpenAI
+Codex and others), as a Model Context Protocol server over standard input and output. It runs only with an agent
+sign-in (`darkroom login --agent`; a person's sign-in or none exits 1, and DarkRoom is asked at start which kind it
+recorded). Eleven tools, each declared read-only: `list_storage_locations`, `list_storage_entries` (browsable
+locations only, through DarkRoom, never with this computer's storage key), `list_jobs`, `get_job`, `get_job_log` (at
+most 200 lines and 64 KB, labelled as untrusted output), `list_job_outputs` (names, kinds and sizes), `list_sessions`,
+`get_usage`, `get_capabilities`, `find_workflows`, `get_workflow`. No tool takes or returns a token or key. Standard
+output carries only protocol messages. It re-reads the stored sign-in before every request, so it shares it safely
+with other commands (single-use refresh tokens). What a tool returns is sent to the assistant's AI provider; the
+endorsed ones are from Anthropic, Google and OpenAI, and following your project's data rules is your responsibility.
+New module: the official MCP Go SDK (`github.com/modelcontextprotocol/go-sdk` v1.8.0, Apache-2.0/MIT) and, through
+it, `google/jsonschema-go`, `segmentio/encoding`, `segmentio/asm`, `yosida95/uritemplate`, `golang.org/x/oauth2`,
+`x/sync`, `x/sys`, `x/time`. The agent skill and `darkroom login --help` now say what an agent sign-in may not do
+(DarkRoom refuses it making or rotating keys and notebook tokens and ending other sign-ins: `auth.agent_forbidden`).
+
+`darkroom storage cp SRC DST [-r] [--force] [--dry-run] [--json] [--quiet] [--strict] [--concurrency N]` and
+`darkroom storage rm LOCATION:PATH [-r] [--dry-run] [--yes] [--json] [--quiet]` (stage 2). `cp` copies between this
+computer and an object-storage location (upload or download; not between two locations). The whole plan is listed and
+checked before anything moves; `--dry-run` shows it; any item that breaks a rule refuses the whole run. An existing
+destination is refused without `--force` (the check and the write are separate requests: a small race). Uploads of over
+8 MiB are multipart (part size from the file size, at most 9,000 parts, files over 5 TiB refused), 4 parts at a time,
+aborted on failure and on Ctrl-C (a second Ctrl-C exits at once); requests are retried with back-off for server errors
+and broken connections, never for AccessDenied or a bad key (explained instead); the stored key is re-read once if
+another command rotated it. Downloads go to `NAME.part` and are renamed when complete, an interrupted one continues with a
+Range request guarded by `If-Match` when the object's ETag is the one recorded beside the part, local symbolic links are
+never followed, and keys that would escape the destination, name a file in two ways or differ only in case on macOS and
+Windows are refused. `rm` never deletes the location root, needs `-r` and a trailing `/` for a folder, lists first,
+and asks you to type `yes` (`--yes` off a terminal); it deletes with one DeleteObject per object and reports every
+failure. A source that changes during an upload fails that item (a multipart upload is aborted); a download part without a valid record (`darkroom-etag-v1 ETAG`) is never deleted without `--force`, and a part of the tool's own of an earlier version is replaced with a warning; one run at a time writes a file; `rm -r` skips (never deletes) keys with `.`, `..` or empty segments or a leading `/`, deletes the rest, lists the skipped ones and exits 1 when anything was skipped. No new module: multipart is implemented on `service/s3`. Not part of this: mv, sync, presign, copy between
+locations, resuming an upload after the program has ended.
+
+`darkroom storage`: object storage from the command line (stage 1: listing, the key and the setup of other tools).
+
+`darkroom storage ls [LOCATION[:PATH]] [-l] [--human] [--json]`: with no argument, your object-storage locations
+(access, `s3://` address, whether a personal key reaches them, used space and quota); with a location and optional
+path, the objects and folders in it from an S3 listing (delimiter `/`, every page, always under your own prefix, so
+the root of the `users` bucket is never listed). Paths with `..`, empty segments, backslashes or control characters
+are refused before anything is sent. The first dependency besides cobra: the AWS SDK for Go v2 (`service/s3`, Apache-2.0),
+used with path-style addressing and the default request and response checksums switched off, as the storage system needs;
+buckets are never listed, they come from DarkRoom's locations.
+
+`darkroom storage login | status | rotate | revoke`: this computer's own S3 key (one of your two slots; never made by
+itself). `login` and `rotate` ask on the terminal for a code from your authenticator app when your sign-in is older than
+DarkRoom's step-up window (never from the command line; a run without a terminal and an agent sign-in are refused); they
+find and offer to replace a key whose answer was lost, and `rotate` says so before calling DarkRoom when no slot is free.
+The secret is kept only in `~/.darkroom/v2/object-key.json` (0600, bound to the server and user), and is never printed
+or logged; `revoke` deletes it only after DarkRoom confirms.
+
+`darkroom storage setup env | aws | rclone`: configure other tools. `setup aws` writes the profile `darkroom` with
+`credential_process` (the key stays in darkroom's file), path-style addressing and both checksum settings; it never
+replaces an existing profile without `--force` and honours `AWS_CONFIG_FILE`. `--write-credentials` (AWS) and `setup rclone`
+write a copy of the secret that `rotate` keeps current and `revoke` removes. `setup env` prints export lines. The hidden
+`storage credential-process` prints the JSON the AWS tools read, and nothing else, without any network call.
+
+The 0.x `darkroom storage` commands (API v1) are deprecated in favour of these. `darkroom logout` now says when a storage
+key is left active. Not yet: `storage cp` and `storage rm`.
+
 ## v2.0.0-rc.5
 
 `darkroom session cp`: copy files and directories between this computer and a running Session's

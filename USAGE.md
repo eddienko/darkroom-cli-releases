@@ -65,13 +65,21 @@ operator announces. `darkroom` never updates itself, downloads or runs anything.
   (10 minutes by default); it stops at once on any other refusal.
 - `darkroom login --agent`: the same, for an AI agent: the human runs it. The approval
   page shows that an agent is asking, and the jobs this sign-in submits are labelled
-  `agent` in DarkRoom (a label only: the same rights as any sign-in). It still needs the
+  `agent` in DarkRoom. DarkRoom refuses it every security-sensitive account operation
+  (making or rotating keys and notebook tokens, ending other sign-ins: `auth.agent_forbidden`,
+  final, never a request for a code), and applies an assistant's rules to it (see
+  `darkroom mcp`): only Workflows staff marked for assistants, custom jobs and Sessions only
+  with `agent_actions`, a limit of jobs and Sessions per hour, stopping only Sessions an
+  assistant started. `job submit`, `job rerun` and `job cancel` say so in plain words when
+  DarkRoom refuses one of these (`agent.workflow_not_allowed`, `agent.capability_missing`,
+  `agent.rate_limited` with when to try again, `auth.agent_forbidden`; exit 1). It still needs the
   human to approve in the browser; nothing in `darkroom` can approve it. A computer
   keeps one sign-in (`~/.darkroom/v2`, or `$DARKROOM_CONFIG_DIR`), so signing in as the
   other kind than the stored one (`--agent` over a plain sign-in, or the reverse) is
   refused unless you add `--force` (it then replaces and ends the old one) or log out
   first; use a separate `DARKROOM_CONFIG_DIR` to keep both.
-- `darkroom logout`: ends this computer's sign-in on the server and removes it locally.
+- `darkroom logout`: ends this computer's sign-in on the server and removes it locally. A storage key (`darkroom
+  storage login`) is not ended: stderr says so; run `darkroom storage revoke` before logging out.
 
 ## darkroom job submit [flags] (-- COMMAND [ARGUMENT...] | --shell LINE)
 
@@ -467,6 +475,330 @@ added) it is not forced. Names are shown with control characters as `?`.
 
 Exit status: 0 every target was deleted or was already gone (or `--dry-run` with nothing wrong); 1 anything
 failed or you answered no; 2 a wrong command line, `-r`, a refused target, or a non-interactive run without `--yes`.
+
+## darkroom storage
+
+Object storage: your locations, the objects in them, copying to and from them, deleting, and the S3 key this
+computer uses. The commands are for API v2 (the 0.x
+`darkroom storage ls | cp | rm | stat | mb` of the old client belong to API v1 and are not part of 2.x: use
+these instead, and keep a 0.x binary only for what 2.x does not do yet).
+
+**The key.** Object storage is reached with a personal, expiring S3 key (DarkRoom: Account > Credentials). You
+have two key slots in all; `darkroom` owns at most one of them, named `cli-<host name>`, and the web app may hold
+the other. `darkroom` never creates a key by itself: a missing or expired key is reported (`run darkroom storage
+login`). The secret is returned once by DarkRoom and kept in `~/.darkroom/v2/object-key.json` (or
+`$DARKROOM_CONFIG_DIR`), written atomically with mode 0600 in a 0700 directory, refused on Linux and macOS if
+others can read it, and bound to the DarkRoom address and user name it was made for (another is never used). It is
+never printed, logged, put in a URL or an error, or sent to DarkRoom. A file that can't be used (readable by others, not
+a regular file, damaged, or holding a value that isn't plausible, such as a region with a line break) is never used and its
+content never shown: delete it and run `darkroom storage login` (which finds the key DarkRoom still holds for this computer,
+by name, and offers to replace it; `login` and `revoke` offer to ignore or delete such a file on a terminal). Ctrl-C at a
+prompt ends the command with nothing changed. On Windows no permissions are set (the same
+posture as the sign-in file): the file is as private as your profile directory. Anyone who can run programs as you
+can read it, which is why an AI agent's sign-in (`login --agent`) is refused here. Expiry (default 30 days, 1 hour
+to 1 year as DarkRoom sets it) is enforced by DarkRoom's sweeper shortly after the time, not at the instant; from
+the expiry on this computer no longer uses the key.
+
+### darkroom storage ls [flags] [LOCATION[:PATH]]
+
+With no argument: your object-storage locations, `LOCATION  ACCESS  URI  PERSONAL KEY  USED  NAME` (`PERSONAL KEY` is what DarkRoom says: a personal key can reach the
+location, not that this computer has one; with no usable key here one line on stderr says so; `USED` is the project's used space and quota where DarkRoom knows them, not only
+yours). `--json`: an array of `{location, id, name, access, uri, endpoint, bucket, prefix, personal_credentials,
+used_bytes, quota_bytes, usage_as_of}`. No key is needed for this list.
+
+With a location: the objects and folders directly under `PATH`, from an S3 listing (delimiter `/`, every page, always
+with your own prefix in that location, so the root of the `users` bucket, which the storage system refuses, is never
+listed). `LOCATION` is a name such as `processed` or an id such as `loc_processed`; the locations come from DarkRoom,
+never from a bucket list (a plain `aws s3 ls` reaches only one of the two storage systems). `PATH` is relative to your
+prefix in that location; one leading `/` is the root (`users:/data` is `data`). `..` and `.` segments, empty segments
+(`a//b`), backslashes, control characters, invalid text encoding and keys over 1024 bytes are refused with exit status 2
+before anything is sent. A `PATH` ending in `/` is a folder; without it, a folder of that name is listed if there is
+one, else the single object is described. Names are in the order S3 returns them (byte order), `/` after a folder,
+control characters shown as `?`.
+
+| Flag | |
+|---|---|
+| `-l`, `--long` | A table `TYPE SIZE MODIFIED NAME` (`dir` or `file`; size in bytes, `-` for a folder; time in your zone). |
+| `--human` | With `-l`, sizes in KiB, MiB, GiB. |
+| `--json` | One array on stdout and nothing else, streamed: `{name, path, type: "file"\|"dir", size, last_modified}` (`path` relative to your prefix; `size` and `last_modified` are `null` for a folder). If the listing fails part way the array is closed after the entries already written (valid JSON, possibly incomplete), the error is on stderr and the exit status is 1; a failure before listing starts leaves stdout empty. |
+
+An empty location prints nothing (`[]` with `--json`), exit 0; a path with nothing under it is exit 1. The request
+goes only to the location's endpoint, which must be `https://` (as for DarkRoom itself, `http://` only for localhost)
+and the same as the key's, with path-style addressing and the SDK's default checksums switched off (the storage
+system refuses them). A refusal is explained after the fact: from the S3 error (`RequestTimeTooSkewed`: your clock;
+`AccessDenied`, `InvalidAccessKeyId`, `SignatureDoesNotMatch`) and one read of your credentials, which says whether the
+key was revoked or rotated elsewhere (for example in the web app), expired, or does not reach that location. A
+warning on stderr says when the key has under two days left. Exit status: 0; 1 a failure; 2 a wrong command line.
+
+### darkroom storage cp [flags] SRC DST
+
+Copies one file or (with `-r`) one folder between this computer and a location: upload (`SRC` local, `DST`
+`LOCATION:PATH`) or download. Copies between two locations or between two local paths are refused (exit 2). `PATH` is
+as for `storage ls`; if `DST` is an existing folder or ends in `/` the source keeps its name inside it, otherwise `DST`
+is the new name. A remote folder is written with a trailing `/` (`-r` without it, on something that is not an object, is
+refused with "did you mean data/").
+
+| Flag | Meaning |
+|---|---|
+| `-r` | copy a folder |
+| `--force` | replace destinations that already exist (otherwise each one is refused) |
+| `--dry-run` | print the plan (every item, sizes, total, what replaces, what is skipped) and stop; only listing and HEAD requests are made |
+| `--strict` | refuse the run if anything would be skipped |
+| `--concurrency N` | requests in flight for an upload, 1 to 16 (default 4) |
+| `--quiet` | no progress, no summary |
+| `--json` | ONE document on stdout: `{command, direction, dry_run, files, bytes, skipped, refused, failed, error, results: [{path, local, bytes, status, error, note}]}`; valid also when the run fails (`error` says why); a failure before the plan (wrong path, no key, read-only location) writes nothing to stdout |
+
+**Plan first.** Everything is listed and checked before the first byte moves; one item that breaks a rule refuses the
+whole run (nothing is copied, exit 1). An existing destination is such an item unless `--force`: upload, the key exists;
+download, the file exists. Nothing conditional is sent (no `If-None-Match`): the check and the write are separate
+requests, so a writer that appears in between can still be overwritten (a small race). A location whose access is `read`
+refuses an upload before any request, with DarkRoom's explanation. Large listings are streamed: the plan is built twice
+(once to check, once to transfer) and holds only a hash per name (and per folder), never the items; with `--json` it also
+holds at most 10,000 results and at most 10,000 failures (`truncated: true` says a list was cut; the counters are exact; `--json` `path`, `local`, `error` and `note` are
+sanitised, control characters shown as `?`, so a `local` path is not byte-exact),
+and an upload holds the names of one folder at a time (a folder with millions of entries needs memory for them). Pass 2 leaves
+alone anything the plan did not contain.
+
+**Upload.** A file of up to 8 MiB is one PutObject; a larger one is a multipart upload with parts of `max(8 MiB,
+size/9000)` rounded up to a MiB (so never more than 9,000 of the 10,000 parts S3 allows); above 5 TiB it is refused. Parts
+go `--concurrency` at a time. A failed upload and Ctrl-C (or SIGTERM) abort the multipart upload this run created; a
+second Ctrl-C ends the program at once and may leave parts behind. The CLI cannot list unfinished uploads in the `users`
+location (the storage system does not grant `ListBucketMultipartUploads` there), so it only aborts what it started in the
+same run; leftover parts are for the administrator. Server errors (5xx), throttling and broken or stalled connections are
+retried three times with a growing pause; `AccessDenied`, `InvalidAccessKeyId` and `SignatureDoesNotMatch` never are
+(they are explained with one read of your credentials and the run stops). If another command rotated the key meanwhile
+it is read once more (under the key lock) and the request repeated. A key that is expired or has under 5 minutes left is
+refused before anything is sent; under 2 days left is warned about; a key that expires during the run stops it. Symbolic
+links and special files inside a folder are skipped and listed (never followed); `--strict` refuses the run for them. A name
+that cannot be a key (control characters, a backslash, invalid UTF-8) is refused. A source that cannot be opened is refused in the
+plan. A file whose size or modification time changes between the plan and the end of its read **fails that item**: a
+multipart upload is aborted and nothing is published; a small file is sent in one request, which may already have
+published the object, and the message then says "the object may hold a partial copy: run the command again with
+`--force`". A file that appears after the plan is skipped with a warning (run again). Three failures **of the storage** in
+a row stop the run; failures of this computer's own files (an unreadable file, a full disk) never count toward that. There
+is no resume of an upload after the program ended: run it again (with `--force` for what is already there).
+
+**Download.** Each file is written to `NAME.part` (and `NAME.part.etag`, the object's ETag when the part was started)
+and renamed when complete. Running the command again continues an interrupted part: a HEAD gives the current ETag, and
+only when it equals the recorded one is the rest fetched with `Range` and `If-Match`; otherwise (or when the server
+ignores the range) the file starts again. The record is the single line `darkroom-etag-v1 ETAG` (anything else is not a valid record). A part with a valid record of
+**another version** of the object is this tool's own and is replaced, with a `warning: replaced NAME.part: ...` line on stderr (the plan says so too). A
+`NAME.part` (or a stray `NAME.part.etag`) **without** a valid record is taken for your own file: it is
+refused in the plan (and in `--dry-run`, which marks a continued part `RESUMES the part` and a forced replacement
+`REPLACES NAME.part`) and is replaced only with `--force`: **a part without a valid record is never deleted without `--force`**. A part, a record or a
+`NAME.part.lock` that is a link, a pipe or a folder is refused by name and never opened or removed (an old lock is taken over only if it is a regular file); the record is created exclusively
+and read without following a link. One run at a time writes a file: `NAME.part.lock` is created exclusively, refreshed
+while held, removed on exit, and taken over when nobody refreshed it for 2 minutes (a second run says "another darkroom run is
+writing this file ... if no other darkroom is running, the lock is taken over after 2 minutes"). The part is written at its offset (not appended) and must have exactly the object's size before
+it is renamed. A file written earlier in the same run is never replaced, even with `--force`; two keys that macOS sees as one
+name through Unicode normalisation (NFC/NFD) are only caught when the second is written, and fail that item (the plan cannot
+tell without a normalisation library). Downloaded files are 0644 in 0755 folders (your umask applies; use `umask 077` for
+private data), nothing is fsynced before the rename, and no checksum of the content is checked (a multipart ETag is not a
+content hash). Local symbolic links are never followed, in the destination's folders or as the file or its part. The plan refuses: keys with `..`, an absolute path, empty segments, a backslash, control characters or
+invalid UTF-8; names Windows does not allow (reserved names, `<>:"|?*`, a trailing dot or space) on Windows; a key that
+is both an object and a folder (named, with its partner, on stderr); keys that differ only in case on macOS and Windows;
+a key that is the temporary name (`x.part`, `x.part.etag`) of another. Folder marker objects (keys ending in `/`) are
+skipped. The listing asks for URL-encoded keys and decodes them only when the storage system says it did so.
+
+Exit status: 0; 1 a failure or a refusal; 2 a wrong command line or path.
+
+### darkroom storage rm [flags] LOCATION:PATH
+
+Deletes objects. **Permanent: no undo, no trash.** Never deleted, whatever the flags: the location's root (your whole
+prefix in `users`, or the whole bucket). A path ending in `/` is a folder and needs `-r`; with `-r` the path must end in
+`/` (so `data` can never reach `data2/`). The objects are listed first (streamed) and you see the count, the total size and
+the first names (control characters shown as `?`), then must type the word `yes`; without a terminal `--yes` is
+required (exit 2); `--dry-run` shows the same and deletes nothing. Deleting is one DeleteObject per object, 8 at a
+time (the batch call is not used); a failure does not stop the others and all are reported (exit 1); an object already gone
+counts as deleted; each object is deleted by its exact listed key. A read-only location is refused with DarkRoom's
+explanation. `--quiet`, `--json` as for `cp` (`{command, dry_run, files, bytes, skipped_unsafe, failed, error, results}`, real sizes from the listing; skipped keys are in
+`results` with status `refused` and a note; the lists hold at most 10,000 entries, `truncated` says so, the counters are exact).
+The second listing may not exceed the count of deletable keys you confirmed (the run stops).
+
+**Unsafe keys (owner decision).** A key with a `.`, `..` or empty segment or a leading `/` could be read as another key by a proxy that
+normalises paths, so it is never deleted by this command, whatever the flags (there is no flag to delete it; use another tool).
+With `-r` such keys are **skipped**: the rest of the folder is deleted as planned, the skipped names are listed (sanitised) with the
+reason `unsafe key (.. / empty segment / leading slash)`, and the exit status is **1 whenever anything was skipped**, also for
+`--dry-run` (0 when nothing would be skipped), so scripts notice. The plan and the question show both numbers: "delete N objects (X) under
+LOC:PATH; skip M whose names cannot be deleted safely"; `--yes` skips the question but the line is still printed on stderr. The final line
+reads "Deleted N; M skipped (unsafe names: delete them with another tool); F failed". Unsafe keys are never deleted in the second listing
+either; if their number there differs from the first listing the run says so once ("the listing now has K unsafe key(s) (K0 in the first
+listing)"; no key is named), sets `unsafe_changed: true` in `--json`, exits 1 and keeps deleting the safe keys (the first listing's rows and
+`skipped_unsafe` stay the reported set; an equal number swapped for other keys is not noticed; a growing count of safe keys stops the run). A single key addressed
+directly (without `-r`) with such a path is refused (exit 2). A folder of only unsafe keys deletes nothing (exit 1). Keys whose
+names `PATH` rejects (control characters, backslash) are reachable only through `-r` of the parent folder. Three failures of the storage in
+a row stop the run.
+
+### darkroom storage login | status | rotate | revoke
+
+- `storage login [--expires-in 90d] [--json]` makes this computer's key (`POST /credentials`). DarkRoom asks you to
+  confirm it is you when your sign-in is older than its step-up window (10 minutes by default; a CLI token refresh does
+  not renew it): `darkroom` then asks on the terminal for a code from your authenticator app (6 digits) or a recovery
+  code, and sends it only in the request body (never from the command line or the environment; it is shown as you
+  type). Three wrong codes stop it; DarkRoom's own limit on wrong codes (`429`) is reported with its wait. A
+  non-interactive run (no terminal) is refused with exit status 2: a script or CI cannot create a key. Under an
+  agent sign-in it is refused (exit 1, checked on this computer only). If this computer already has an active key it
+  stops; if the stored key is no longer active in DarkRoom it makes a new one. **A lost answer:** creation and rotation
+  have no idempotency key, so an answer that is lost may leave a key holding a slot with no secret here; `login` says
+  so, and the next `login` finds an active key with this computer's name that nothing here can use and, after you
+  confirm, revokes it (a short time with no key) and makes a new one. No free slot (two keys held) is reported with
+  the keys' names, before anything is created. When the storage system or its expiry check is not answering (either of
+  its two gateways may be down) nothing is created and the message says so.
+- `storage status [--json]`: the stored key's key id (never the secret), expiry, what DarkRoom says about it (active,
+  revoked, expired, or no record: the web app can change it), the slots in use and the locations it reaches with their
+  access. `--json`: `{state, server, username, credential_id, key_id, endpoint, region, expires_at, locations,
+  keys_active, keys_max, files}`, `state` being `none`, `active`, `expired`, `revoked` or `unknown`. Exit 0 whenever it
+  could report.
+- `storage rotate [--expires-in 90d] [--json]`: DarkRoom's rotation (the new key is made in the free slot, then the old
+  one revoked, within about a minute). The same terminal, step-up, agent and lost-answer rules as `login`. A rotation
+  needs a free slot: with two keys held it says so before calling DarkRoom and, on a terminal, offers to revoke this
+  key first and make a new one instead, with a warning about the gap (anything using the key fails meanwhile, and a
+  failure to make the new key leaves you without one); the alternative is to revoke the other key and rotate. An expired
+  or revoked key cannot be rotated (`login` instead). Files that `storage setup` wrote with a copy of the secret are
+  updated, but only where they still hold the old one.
+- `storage revoke`: revokes the key and, **only after DarkRoom answers 200**, deletes the local file and the copies
+  `storage setup` wrote (where still the old secret). A gateway that is down (`503`) leaves the key active and the file
+  in place: run it again. A revoked key may keep working for a minute or two (the gateways cache accounts). Nothing
+  to revoke is exit 0. `darkroom logout` does not revoke the key (it says so on stderr): revoke before logging out.
+
+Exit status of all four: 0; 1 a failure or a refusal; 2 a wrong command line or no terminal.
+
+### darkroom storage setup env | aws | rclone
+
+**Environment variables win.** Exported `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` or `AWS_SESSION_TOKEN` beat
+`AWS_PROFILE`, so they override the darkroom profile: unset them if `aws` reports `SignatureDoesNotMatch`. After
+`storage rotate` the key id stays the slot's id but the secret changes, so variables exported by `setup env` go stale.
+`storage status` warns (stderr, and `warnings` in `--json`; never the values) when any of the three is set.
+
+All need a usable key and read only your files. They never write the secret anywhere except where stated.
+
+- `setup env`: `export` lines (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_DEFAULT_REGION`,
+  `AWS_ENDPOINT_URL_S3`, `AWS_REQUEST_CHECKSUM_CALCULATION` and `AWS_RESPONSE_CHECKSUM_VALIDATION` as `when_required`)
+  for `eval "$(darkroom storage setup env)"`. Writes nothing. **The secret is on stdout**; path-style addressing cannot
+  be set by environment variable.
+- `setup aws [--print] [--force] [--write-credentials]`: the profile `[profile darkroom]` in `$AWS_CONFIG_FILE`, else
+  `~/.aws/config` (a symbolic link is followed and kept; other lines and profiles are untouched; the file is replaced
+  atomically): `region` (DarkRoom's, else `us-east-1`), `endpoint_url`, `s3 = addressing_style = path`, both checksum
+  settings `when_required`, and `credential_process = "/absolute/path/to/darkroom" storage credential-process
+  [--config-dir "DIR" --]` (the directory only when `$DARKROOM_CONFIG_DIR` is set). The AWS CLI runs it for each call:
+  the secret stays in darkroom's file and nothing goes stale on rotation. `--write-credentials` copies the key into
+  `$AWS_SHARED_CREDENTIALS_FILE`, else `~/.aws/credentials` (mode 0600) instead; `rotate` keeps that copy current and
+  `revoke` removes it. An existing, different `[profile darkroom]` is never replaced unless `--force`; a file with two sections of that name is
+not edited (remove the extra one); a CRLF file keeps its line endings; `--print` shows
+  what would be written (never the secret) and changes nothing. A warning is printed if the AWS CLI on the `PATH` is
+  v1 or older than 2.13. Use it with the whole address: `AWS_PROFILE=darkroom aws s3 ls s3://space-users/jdoe/` (a
+  bare `aws s3 ls` lists the buckets of only one of the two storage systems).
+- `setup rclone [--print] [--force] [--aws-profile]`: the remote `[darkroom]` in `$RCLONE_CONFIG`, else
+  `$XDG_CONFIG_HOME/rclone/rclone.conf` or `~/.config/rclone/rclone.conf` (`%APPDATA%\rclone\rclone.conf` on Windows),
+  mode 0600, an S3 remote with `provider = Other`, `force_path_style = true`, the endpoint, a region, and the key (an
+  extra copy of the secret, kept current by `rotate`, removed by `revoke`). `--aws-profile` writes the remote without a
+  secret (and forgets any record of a secret copy at that path, so `rotate` and `revoke` say nothing about it) (`env_auth = true`, `profile = darkroom`): rclone then runs the AWS profile's `credential_process`, so
+  `setup aws` is needed as well (tried with rclone 1.76 against a stand-in only). An encrypted `rclone.conf` is not
+  edited. Use `rclone lsf darkroom:space-users/jdoe/`; do not list the remote's buckets.
+- `storage credential-process` (hidden; run by other programs): stdout is `{"Version":1,"AccessKeyId":…,
+  "SecretAccessKey":…,"Expiration":…}` and nothing else. It makes no request, refreshes no token and prints no
+  notice; when the key is missing, expired, unusable or is not for the stored sign-in it exits 1 with one line on
+  stderr ending `run darkroom storage login`. It needs the stored sign-in only to check the key belongs to it.
+
+## darkroom mcp [--read-only]
+
+Serves DarkRoom tools to an AI assistant on this computer over the Model Context Protocol
+(MCP), on standard input and output. The assistant starts it (register the full path of
+`darkroom` and the argument `mcp` with it; see the README, for Claude Code with
+`claude mcp add --scope user`); you don't run it yourself.
+
+- **Agent sign-in only.** It runs only with a sign-in made by `darkroom login --agent` in the
+  configuration directory it uses (`~/.darkroom/v2`, or `$DARKROOM_CONFIG_DIR`). With a
+  person's sign-in, or none, it sends no token (only the usual version check) and exits 1, saying to run `darkroom login
+  --agent`. At start it also asks DarkRoom which kind it recorded for the sign-in and stops
+  (exit 1) if DarkRoom holds it as a person's, or if the sign-in has ended; if DarkRoom can't
+  be reached it says so on stderr and starts anyway.
+- **The shared sign-in.** It reads the stored sign-in again before every request, so a
+  refresh made meanwhile by another `darkroom` command is used, not repeated (refresh tokens
+  are single-use; refreshes are serialised by a lock in the configuration directory). If the
+  stored sign-in is removed, replaced by a person's sign-in or moved to another DarkRoom while
+  it runs, the tools stop with a message saying to run `darkroom login --agent`; a person's
+  token is never sent.
+- **Read tools and tools that act.** The read tools only read, through DarkRoom, as you, and
+  are marked read-only (`readOnlyHint`). The tools that act are marked not read-only, and
+  `cancel_job` and `stop_session` destructive (`destructiveHint`). No tool uses this
+  computer's storage key (`darkroom storage login`), and no tool takes or returns a token,
+  key or notebook token.
+- **`--read-only`** serves only the eleven read tools of the first version (`list_storage_locations`
+  to `get_workflow` below): no other tool is listed, and a call to one is refused as an
+  unknown tool. Use it to keep an assistant that can only look.
+- **Idempotency keys.** Each call of a tool that creates a Job or Session (`run_workflow`,
+  `submit_job`, `rerun_job`, `start_session`) sends one `Idempotency-Key` (a new UUID, or the
+  `idempotency_key` argument), uses the same key for its own retries, and returns it. After an
+  unknown outcome (`outcome_unknown: true`) the assistant calls again with that key: DarkRoom
+  returns the same Job or Session if it was created. Once one attempt's outcome is unknown,
+  the call reports `outcome_unknown` with its key even if a later retry fails otherwise. A
+  write refused `401 auth.unauthenticated` because another `darkroom` command renewed the
+  shared sign-in at that moment is not sent again by itself: the tool says nothing was done
+  and to call it again once.
+- **Output.** Standard output carries only protocol messages; notices (the update notice,
+  as for every command), warnings and errors go to standard error. A read tool tries a
+  transient failure (network, `429`, `502`/`503`/`504`) again twice, briefly. A tool that acts
+  tries the network, `502`, `503` and `504` again twice, briefly, with the same key, and
+  **never a `429`**: `agent.rate_limited` (and any other `429`) is returned at once with
+  `retry_after_seconds`.
+
+| Tool | Arguments | Returns |
+|---|---|---|
+| `list_storage_locations` | none | your storage locations: id, name, kind, access, `browsable`, quota and usage |
+| `list_storage_entries` | `location` (id, id without `loc_`, or exact name), `path`, `cursor`, `limit` (1-200, default 100) | one directory: names, kinds, sizes, modification times, `next_cursor`. Only locations with `browsable` true (object storage the deployment lets DarkRoom list); others are refused with an explanation |
+| `list_jobs` | `state` (comma separated), `limit` (1-100, default 20), `cursor` | your Jobs, newest first: number, name, kind, state, workflow, times, failure |
+| `get_job` | `number` | one Job: state, failure, workflow and parameters or command (each at most 16 KB), inputs, output location, resources, times |
+| `get_job_log` | `number`, `tail` (1-200, default 100) | the last lines of the log, at most 200 lines and 64 KB (each line at most 4 KB), newest kept, labelled as untrusted output of the job |
+| `list_job_outputs` | `number` | what the Job wrote at the top of its output directory: names, kinds, sizes, where; never contents |
+| `list_sessions` | `state` (comma separated) | your Sessions (by default the ones not finished and those started in the last 7 days), at most 100, with `requested_via` (`agent`: started by an assistant) |
+| `get_usage` | none | the compute you hold now against your limits |
+| `get_capabilities` | none | the features, the actions you are entitled to, your limits, and `agent_policy`: `allowed_actions`, `agent_actions`, `submissions_per_hour`, `submissions_used`, `submissions_remaining`, `retry_after_seconds` |
+| `find_workflows` | `query`, `limit` (1-100, default 25) | Workflows you may run: slug, name, summary, tags, current version, `agent_runnable` |
+| `get_workflow` | `slug`, `version` (default: current) | one version: documentation (at most 8 KB), parameter schema (at most 32 KB), inputs, declared outputs, resources, `runnable`, `agent_runnable` |
+| `list_sizes` | `usable_for` (`job`, default, or `session`), `app_id` | the Sizes you may use: id, name, resources, `default_for` |
+| `list_environments` | `usable_for` (`job`, default, or `session`), `app_id` | the Environments you may use: id, name, version, status, `default_for` (description at most 1 KB) |
+| `list_apps` | none | the interactive Apps you may start: id, name, availability, the Environments and Sizes each allows, its defaults |
+| `preview_workflow_run` | as `run_workflow`, without `idempotency_key` | what the run would be (`POST /jobs/preview`): name, resources, Environment, parameters, inputs (with where they appear in the Job), mounts, output location, `warnings` (one says when the hourly limit is used up); nothing is created or counted. Read-only |
+| `preview_job` | as `submit_job`, without `idempotency_key` | what the custom Job would be (`POST /jobs/preview`): name, resources, Environment or image, command, inputs (with where they appear in the Job), mounts, output location, `warnings`; refused as `submit_job` would be (for example without `agent_actions`); nothing is created or counted. Read-only |
+| `run_workflow` | `slug`, `version`, `name`, `parameters` (an object), `inputs` (`[{name, location, path}` or `{name, uri}]`, at most 20), `output_location` (a location id), `size_id` or `resources` (`{cpu, memory_bytes, gpu}`), `idempotency_key` | the new Job (number, state, workflow, resources, inputs, output location) and `idempotency_key` |
+| `submit_job` | `command` (1-16 strings), `args` (0-256), `environment_id` or `image`, `name`, `inputs`, `output_location` (required), `size_id` or `resources`, `idempotency_key` | the new custom Job and `idempotency_key`. The command runs as given, with no shell |
+| `rerun_job` | `number`, `idempotency_key` | the new Job (`rerun_of` set) and `idempotency_key` |
+| `cancel_job` | `number` | the Job's state (`cancelling`), or `already_finished` with its final state. Destructive |
+| `start_session` | `app_id`, `environment_id`, `size_id` (defaults: the App's), `label` (at most 80 characters), `idempotency_key` | the Session (id, state `starting`, `requested_via`) and `idempotency_key` |
+| `stop_session` | `id` | the Session's state (`stopping`), or `already_stopped`. Destructive |
+
+Ids may be given with or without their prefix (`loc_`, `env_`, `siz_`, `app_`, `ses_`).
+
+**What DarkRoom allows an assistant** (DarkRoom enforces it for every
+request of an assistant's sign-in, whatever the program, and `darkroom mcp` adds no rule of
+its own; your DarkRoom's staff set it):
+
+- Workflows only if staff marked them `agent_runnable` (else `agent.workflow_not_allowed`);
+- custom Jobs (also the rerun of a custom Job) and Sessions only if staff granted your account
+  `agent_actions` (else `agent.capability_missing`), on top of your own rights;
+- at most `submissions_per_hour` Jobs and Sessions created by assistants' sign-ins per hour
+  (30 by default; else `429 agent.rate_limited` with the seconds until one more fits);
+  previews, cancels and stops are not counted;
+- cancelling any of your Jobs; stopping only Sessions an assistant started (else
+  `auth.agent_forbidden`).
+
+A tool that is refused answers a tool error that says why and what to do, with the facts as
+structured content: `code`, `status`, `retry_after_seconds`, `limit`, field `errors` (JSON
+pointers into the request), `current_version`, `outcome_unknown`, `idempotency_key`. These
+rules bind the assistant's sign-in, not the program: an assistant with a shell can use a person's
+sign-in on the same computer. They guard against accidents and injected instructions.
+
+It cannot copy or delete anything, read a file's contents, list storage areas that are not
+browsable, or make or show credentials.
+
+**Your data.** What a tool returns (file and job names, parameters, commands, log lines and
+output names, including those of custom Jobs) is sent to the AI provider behind your
+assistant. The endorsed assistants are from Anthropic, Google and OpenAI. Following your
+project's rules about which data may be sent to them is your responsibility.
+
+Exit status: 0 when the assistant closes the connection (or on Ctrl-C), 1 a failure (not
+signed in, not an agent sign-in, the sign-in ended, a protocol failure).
 
 ## Waiting and transient errors
 
