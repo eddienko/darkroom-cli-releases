@@ -3,6 +3,28 @@
 All notable changes to this project will be documented in this file.
 
 
+## v2.0.0-rc.8
+
+`darkroom mcp`: a new read tool, `get_output_image(number, output, page)`, shows the assistant one image of a Job
+Output's preview (for example a segmentation overlay) as MCP image content, with a line of text (the Job, the Output,
+page n of N, the pixel size, whether it was downscaled or re-encoded) that labels the image as untrusted output of the job. It is
+declared read-only and idempotent and is also served with `--read-only` (23 tools by default, 12 with `--read-only`).
+An image within 1568 px on its long side and 3.75 MB is returned as stored; a larger PNG or JPEG is downscaled in
+memory with the Go standard library (a JPEG stays JPEG, a PNG stays PNG unless it is still too large and opaque, when
+it becomes JPEG); a larger WebP is refused. An image whose header says more than 20,000 px on a side or 50 megapixels
+is refused without being decoded, one image at a time is decoded, and at most 25 MiB is read from DarkRoom. Nothing is
+written to disk.
+`list_job_outputs` now returns each Output's `id` and `preview_type` (with `preview_pages`), so the assistant knows
+which outputs it can view. Output images, like everything else a tool returns, go to the assistant's AI provider.
+
+`darkroom mcp`: the server's instructions now tell the assistant how to use Python environments in Jobs instead of
+installing packages in every Job: find one first (shared ones in `/data/space/envs`, personal ones in `$HOME/Python`,
+listed by a small Job running `envinfo --json`; only `state: "ready"`), use it in the Job's command (activate it, or
+`workon NAME`), make a personal one once with `mkenv --install` if none fits, make a shared one
+(`mkenv --dir /data/space/envs`) only when the human asks, and never install into, change or remove an environment
+someone else made. With `--read-only` only the finding part is given. These helpers come with the DarkRoom notebook
+images that describe each environment in `.darkroom-env.json`.
+
 ## v2.0.0-rc.7
 
 This release also contains the changes listed for v2.0.0-rc.6, which was tagged but never published.

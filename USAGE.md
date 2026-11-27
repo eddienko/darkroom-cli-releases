@@ -724,9 +724,10 @@ Serves DarkRoom tools to an AI assistant on this computer over the Model Context
   `cancel_job` and `stop_session` destructive (`destructiveHint`). No tool uses this
   computer's storage key (`darkroom storage login`), and no tool takes or returns a token,
   key or notebook token.
-- **`--read-only`** serves only the eleven read tools of the first version (`list_storage_locations`
-  to `get_workflow` below): no other tool is listed, and a call to one is refused as an
-  unknown tool. Use it to keep an assistant that can only look.
+- **The tools.** 23 by default. **`--read-only`** serves only 12: the eleven read tools of the
+  first version (`list_storage_locations` to `get_workflow` below) and `get_output_image`; no
+  other tool is listed, and a call to one is refused as an unknown tool. Use it to keep an
+  assistant that can only look.
 - **Idempotency keys.** Each call of a tool that creates a Job or Session (`run_workflow`,
   `submit_job`, `rerun_job`, `start_session`) sends one `Idempotency-Key` (a new UUID, or the
   `idempotency_key` argument), uses the same key for its own retries, and returns it. After an
@@ -750,12 +751,13 @@ Serves DarkRoom tools to an AI assistant on this computer over the Model Context
 | `list_jobs` | `state` (comma separated), `limit` (1-100, default 20), `cursor` | your Jobs, newest first: number, name, kind, state, workflow, times, failure |
 | `get_job` | `number` | one Job: state, failure, workflow and parameters or command (each at most 16 KB), inputs, output location, resources, times |
 | `get_job_log` | `number`, `tail` (1-200, default 100) | the last lines of the log, at most 200 lines and 64 KB (each line at most 4 KB), newest kept, labelled as untrusted output of the job |
-| `list_job_outputs` | `number` | what the Job wrote at the top of its output directory: names, kinds, sizes, where; never contents |
+| `list_job_outputs` | `number` | what the Job wrote at the top of its output directory: ids, names, kinds, sizes, where, and `preview_type` (`image` or `image_series`) and `preview_pages` for those `get_output_image` can show; never contents |
 | `list_sessions` | `state` (comma separated) | your Sessions (by default the ones not finished and those started in the last 7 days), at most 100, with `requested_via` (`agent`: started by an assistant) |
 | `get_usage` | none | the compute you hold now against your limits |
 | `get_capabilities` | none | the features, the actions you are entitled to, your limits, and `agent_policy`: `allowed_actions`, `agent_actions`, `submissions_per_hour`, `submissions_used`, `submissions_remaining`, `retry_after_seconds` |
 | `find_workflows` | `query`, `limit` (1-100, default 25) | Workflows you may run: slug, name, summary, tags, current version, `agent_runnable` |
 | `get_workflow` | `slug`, `version` (default: current) | one version: documentation (at most 8 KB), parameter schema (at most 32 KB), inputs, declared outputs, resources, `runnable`, `agent_runnable` |
+| `get_output_image` | `number`, `output` (an Output id from `list_job_outputs`, with or without `out_`), `page` (from 1, default 1) | one image of the Output's preview, as MCP image content (PNG, JPEG or WebP), and a line of text: the Job, the Output, page n of N, the type, pixel size and bytes, and whether it was downscaled (from what size) or only re-encoded as JPEG to fit the byte limit; the image is labelled as untrusted output of the job. See **Images** below. Read-only |
 | `list_sizes` | `usable_for` (`job`, default, or `session`), `app_id` | the Sizes you may use: id, name, resources, `default_for` |
 | `list_environments` | `usable_for` (`job`, default, or `session`), `app_id` | the Environments you may use: id, name, version, status, `default_for` (description at most 1 KB) |
 | `list_apps` | none | the interactive Apps you may start: id, name, availability, the Environments and Sizes each allows, its defaults |
@@ -789,12 +791,62 @@ pointers into the request), `current_version`, `outcome_unknown`, `idempotency_k
 rules bind the assistant's sign-in, not the program: an assistant with a shell can use a person's
 sign-in on the same computer. They guard against accidents and injected instructions.
 
-It cannot copy or delete anything, read a file's contents, list storage areas that are not
-browsable, or make or show credentials.
+**Images.** `get_output_image` reads the Output first and refuses, without fetching anything,
+an Output with no preview (`not a viewable image: use list_job_outputs`) or a page out of
+range; then it fetches the page from DarkRoom (at most 25 MiB, DarkRoom's own preview limit),
+in memory only: nothing is written to disk.
 
-**Your data.** What a tool returns (file and job names, parameters, commands, log lines and
-output names, including those of custom Jobs) is sent to the AI provider behind your
-assistant. The endorsed assistants are from Anthropic, Google and OpenAI. Following your
+- An image of at most 1568 px on its long side and 3.75 MB (3,750,000 bytes) is returned as
+  stored.
+- A larger PNG or JPEG is decoded and downscaled here (area averaging) to 1568 px on its long
+  side, keeping its proportions. A JPEG stays JPEG (quality 85); a PNG stays PNG (sharp edges
+  and transparency kept), unless it is still over 3.75 MB and has no transparency, when it
+  becomes JPEG. While the result is still over 3.75 MB, its long side is cut by a quarter and
+  it is made again (down to 64 px). A downscaled JPEG loses its metadata (including an EXIF
+  rotation).
+- A larger WebP is refused, with its size (darkroom has no WebP decoder); the human can see it
+  in the web app.
+- Before decoding, the size in the image's header is checked: one over 20,000 px on a side
+  or 50 megapixels is refused without being decoded. One image at a time is decoded and
+  downscaled (a second call waits its turn, and stops if the assistant cancels it).
+- These limits are conservative values for the assistants' providers (about 5 MB per image
+  once base64-encoded), not checked against each provider.
+- DarkRoom's refusals: `404` (the Job, Output or page is not there or not yours), `403
+  entitlement.missing`, `413 preview.too_large`, `503 dependency.unavailable` (storage), and
+  an ended sign-in, each worded for the assistant as for the other tools.
+
+It cannot copy or delete anything, read a file's contents (other than an output's preview
+image), list storage areas that are not browsable, or make or show credentials.
+
+**Python environments in Jobs.** The assistant is told (in the server's instructions) not to
+install packages in every Job but to reuse environments made once, with the `envinfo`,
+`mkenv` and `workon` helpers of the DarkRoom notebook images:
+
+1. **Find one first.** Shared environments are in `/data/space/envs`, personal ones in
+   `$HOME/Python`. A small Job with `bash -lc 'envinfo --json /data/space/envs; envinfo --json'`
+   lists them; choose by `key`, `versions` and `state: "ready"` (an environment that is
+   `building` or `failed` is not usable; one with no description, listed as
+   `{"name": ..., "described": false}`, may be used if its name clearly fits).
+   `"truncated": true` means its lists or strings were shortened;
+   `envinfo --json --freeze DIR` gives the full objects, `freeze` included (long lines that
+   may be cut in a Job log).
+2. **Use it** in the Job's command: `bash -lc '. /data/space/envs/NAME/bin/activate && python run.py'`,
+   or for a personal one `bash -lc 'workon NAME && python run.py'`.
+3. **If none fits, make a personal one once,** in its own Job:
+   `bash -lc 'mkenv --install "pkg1 pkg2" NAME'`, then use it in later Jobs. A **shared** one
+   in `/data/space/envs` only when the human asks for it:
+   `mkenv --dir /data/space/envs --install "..." NAME`, named `<package>-<version>-r<N>` like
+   the others.
+4. **Never install into, change or remove an environment someone else made** (`mkenv` refuses
+   to reuse or clear one). An environment is tied to the notebook image it was made with
+   (`image`, `python` in its description); if they differ from the Job's, make a new one
+   rather than repair it.
+
+With `--read-only` the assistant is told only how to find one (step 1), as it cannot run Jobs.
+
+**Your data.** What a tool returns (file and job names, parameters, commands, log lines,
+output names and output images, including those of custom Jobs) is sent to the AI provider
+behind your assistant. The endorsed assistants are from Anthropic, Google and OpenAI. Following your
 project's rules about which data may be sent to them is your responsibility.
 
 Exit status: 0 when the assistant closes the connection (or on Ctrl-C), 1 a failure (not
